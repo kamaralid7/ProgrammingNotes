@@ -19,3 +19,19 @@ Roslyn
 * Understand async lowering output
 * Roslyn vs JVM compiler internals
 * How EF Core uses generators internally
+
+
+IL + Metadata
+
+* Inspect metadata tables manually (`ildasm`, `dnSpy`)
+* Design a metadata-driven ETL framework
+* Build SharePoint list generators from C# models
+* Compare .NET metadata vs JVM bytecode
+* Source generators vs metadata at runtime
+
+CLR
+* How GC cooperates with JIT
+* CLR memory model & barriers
+* AppDomains → AssemblyLoadContext
+* How exceptions unwind at native level
+* CLR vs Native AOT tradeoffs
