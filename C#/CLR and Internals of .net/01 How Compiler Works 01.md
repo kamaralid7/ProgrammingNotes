@@ -10,15 +10,6 @@ Alright, let’s open the hood 🔧 and really see **how C# code goes from text 
 
 ## High-level pipeline (mental model)
 
-![Image](https://miro.medium.com/1%2AMnq9DtYnjeiwESUjnSi4Mg.gif)
-
-![Image](https://www.c-sharpcorner.com/UploadFile/8911c4/code-execution-process/Images/Code-Execution-Process.jpg)
-
-![Image](https://www.researchgate.net/publication/224264176/figure/fig2/AS%3A302608775434241%401449158962500/CLR-Execu-ution-Model.png)
-
-![Image](https://www.c-sharpcorner.com/UploadFile/ashish_2008/clr-execution-process/Images/CLR.gif)
-
----
 
 ## 1️⃣ C# Compiler (Roslyn) – *Compile time*
 
