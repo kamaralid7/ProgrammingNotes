@@ -447,3 +447,271 @@ SaveChanges() → DetectChanges() runs → Diff snapshot vs current
      ↓
 Generate minimal SQL → Execute → Clear snapshot → Mark Unchanged
 ```
+
+---
+
+# `INotifyPropertyChanged`, `INotifyPropertyChanging` & Change Tracking Strategies
+
+## The Default Problem: Snapshot is Expensive
+
+By default, EF Core stores a snapshot of every property of every tracked entity. At `SaveChanges()`, it loops through all of them and compares. For 10,000 tracked entities with 20 properties each — that's 200,000 comparisons on every save. This is where notification-based tracking comes in.
+
+---
+
+## `INotifyPropertyChanged` — "Tell Me When You're Done Changing"
+
+This interface makes your entity **announce** when a property has already changed. EF Core listens and immediately marks that property as modified — no snapshot comparison needed at save time.
+
+```csharp
+public class Product : INotifyPropertyChanged
+{
+    public event PropertyChangedEventHandler PropertyChanged;
+
+    private string _name;
+    private decimal _price;
+
+    public int Id { get; set; }
+
+    public string Name
+    {
+        get => _name;
+        set
+        {
+            _name = value;
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(Name)));
+            //                          ↑ fires AFTER the value is already set
+        }
+    }
+
+    public decimal Price
+    {
+        get => _price;
+        set
+        {
+            _price = value;
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(Price)));
+        }
+    }
+}
+```
+
+When `Name` is set, EF Core's listener fires immediately and records: "Name on entity #5 is now dirty." No full scan at save time.
+
+---
+
+## `INotifyPropertyChanging` — "Tell Me Before You Change"
+
+This is the **before** counterpart. EF Core uses it to capture the **original value** at the moment just before the change — so it doesn't need a full upfront snapshot.
+
+```csharp
+public class Product : INotifyPropertyChanged, INotifyPropertyChanging
+{
+    public event PropertyChangedEventHandler PropertyChanged;
+    public event PropertyChangingEventHandler PropertyChanging;  // ← fires BEFORE
+
+    private string _name;
+
+    public string Name
+    {
+        get => _name;
+        set
+        {
+            // Fire BEFORE — EF Core captures original value here
+            PropertyChanging?.Invoke(this, new PropertyChangingEventArgs(nameof(Name)));
+
+            _name = value;
+
+            // Fire AFTER — EF Core marks property as modified
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(Name)));
+        }
+    }
+}
+```
+
+The sequence EF Core sees:
+
+```
+PropertyChanging fires → EF records original value ("Widget")
+   ↓
+value is set to "Super Widget"
+   ↓
+PropertyChanged fires → EF marks Name as Modified
+   ↓
+SaveChanges() → no scan needed, EF already knows exactly what changed
+```
+
+This is the most efficient mode — no snapshot at all, changes tracked in real time.
+
+---
+
+## How Changes Are Compared — `ValueComparer<T>`
+
+For simple types like `string` and `int`, EF Core uses standard equality (`==`). But for complex types — arrays, JSON, custom structs — equality isn't obvious. That's where `ValueComparer<T>` comes in.
+
+### The Problem with Arrays
+
+```csharp
+public class UserProfile
+{
+    public int Id { get; set; }
+    public string[] Tags { get; set; }  // ← array
+}
+```
+
+By default, EF Core compares arrays by **reference** — two arrays with identical contents are considered different objects. This means EF Core will always think `Tags` is modified, even if nothing changed.
+
+### Custom `ValueComparer`
+
+```csharp
+var tagsComparer = new ValueComparer<string[]>(
+    (a, b) => a.SequenceEqual(b),                                            // equality
+    v => v.Aggregate(0, (h, s) => HashCode.Combine(h, s.GetHashCode())),     // hash
+    v => v.ToArray()                                                          // snapshot (deep copy)
+);
+
+modelBuilder.Entity<UserProfile>()
+    .Property(u => u.Tags)
+    .HasConversion(
+        v => string.Join(',', v),
+        v => v.Split(',', StringSplitOptions.None))
+    .Metadata.SetValueComparer(tagsComparer);
+```
+
+Now EF Core correctly compares `["csharp", "dotnet"]` with `["csharp", "dotnet"]` as equal — no false `Modified` state.
+
+The three arguments to `ValueComparer<T>` always mean:
+
+1. **Equals** — how to compare two values
+2. **HashCode** — for internal dictionaries
+3. **Snapshot** — how to make a deep copy (if you shallow copy a mutable type, the snapshot changes along with the live value)
+
+---
+
+## `HasChangeTrackingStrategy` — Setting the Strategy Globally
+
+Instead of implementing interfaces on every entity, you can declare a **strategy** in `ModelBuilder` that tells EF Core how to track changes for that entity (or all entities).
+
+```csharp
+// Per entity
+protected override void OnModelCreating(ModelBuilder modelBuilder)
+{
+    modelBuilder.Entity<Product>()
+        .HasChangeTrackingStrategy(ChangeTrackingStrategy.ChangedNotifications);
+}
+
+// Globally for all entities
+protected override void OnModelCreating(ModelBuilder modelBuilder)
+{
+    modelBuilder.HasChangeTrackingStrategy(
+        ChangeTrackingStrategy.ChangingAndChangedNotifications);
+}
+```
+
+---
+
+## The Four Strategies — Side by Side
+
+### `Snapshot` (default)
+
+```csharp
+.HasChangeTrackingStrategy(ChangeTrackingStrategy.Snapshot)
+```
+
+- EF Core stores a full copy of every property on load
+- Compares at `SaveChanges()` time
+- **No interface needed** on your entity
+- Slowest for large graphs, but zero boilerplate
+
+---
+
+### `ChangedNotifications`
+
+```csharp
+.HasChangeTrackingStrategy(ChangeTrackingStrategy.ChangedNotifications)
+```
+
+- Entity must implement `INotifyPropertyChanged`
+- EF Core listens and marks properties dirty in real time
+- No snapshot needed → faster `SaveChanges()`
+- **Downside:** EF Core has no original values — so it updates the column but doesn't know the old value (relevant for audit logs)
+
+---
+
+### `ChangingAndChangedNotifications`
+
+```csharp
+.HasChangeTrackingStrategy(ChangeTrackingStrategy.ChangingAndChangedNotifications)
+```
+
+- Entity must implement **both** `INotifyPropertyChanging` and `INotifyPropertyChanged`
+- EF Core captures original value before change, marks dirty after
+- Most efficient — no snapshot at all, original values preserved
+- Best for performance-sensitive apps with audit requirements
+
+---
+
+### `ChangingAndChangedNotificationsWithOriginalValues`
+
+```csharp
+.HasChangeTrackingStrategy(
+    ChangeTrackingStrategy.ChangingAndChangedNotificationsWithOriginalValues)
+```
+
+- Like above, but EF Core **also** stores a snapshot alongside notifications
+- Use when you need both original values AND real-time notifications
+- Most memory usage, most flexibility
+
+---
+
+## Comparison Table
+
+| Strategy | Interface Needed | Snapshot Stored | Original Values | Performance |
+|---|---|---|---|---|
+| `Snapshot` | None | Yes | Yes | Baseline |
+| `ChangedNotifications` | `INotifyPropertyChanged` | No | No | Better |
+| `ChangingAndChangedNotifications` | Both interfaces | No | Yes | Best |
+| `ChangingAndChangedNotificationsWithOriginalValues` | Both interfaces | Yes | Yes | Most memory |
+
+---
+
+## Clean Base Class Pattern
+
+Instead of duplicating notification boilerplate in every entity, extract it into a base class:
+
+```csharp
+public abstract class TrackedEntity : INotifyPropertyChanging, INotifyPropertyChanged
+{
+    public event PropertyChangingEventHandler PropertyChanging;
+    public event PropertyChangedEventHandler PropertyChanged;
+
+    protected void SetProperty<T>(ref T field, T value, [CallerMemberName] string name = "")
+    {
+        if (EqualityComparer<T>.Default.Equals(field, value)) return;
+
+        PropertyChanging?.Invoke(this, new PropertyChangingEventArgs(name));
+        field = value;
+        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
+    }
+}
+
+// Entities stay clean — one line per property
+public class Product : TrackedEntity
+{
+    private string _name;
+    public string Name
+    {
+        get => _name;
+        set => SetProperty(ref _name, value);  // ← handles both events + equality check
+    }
+}
+```
+
+`[CallerMemberName]` is a C# compiler attribute — it automatically fills in the calling property name at compile time so you never hardcode `"Name"` as a string.
+
+---
+
+## When to Use What
+
+For most apps — use `Snapshot`. It's simple and works without touching your entities.
+
+For high-throughput apps tracking thousands of entities — implement both notification interfaces and use `ChangingAndChangedNotifications`. The boilerplate pays off at scale.
