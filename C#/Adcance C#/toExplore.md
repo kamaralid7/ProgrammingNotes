@@ -21,6 +21,8 @@
 - [x] Delegate Compatibility
 - [x] Events
 - [x] Standard Event Pattern
+- [x] Covariance & Contravariance (real-world usage)
+- [x] Type Compatibility in Delegates (runnable .cs)
 
 ---
 
