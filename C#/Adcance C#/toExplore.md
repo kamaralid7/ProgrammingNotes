@@ -19,6 +19,8 @@
 - [x] Func and Action with ref, out and Pointers
 - [x] Delegate vs Interface
 - [x] Delegate Compatibility
+- [x] Events
+- [x] Standard Event Pattern
 
 ---
 
